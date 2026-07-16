@@ -9,7 +9,8 @@ as a RunPod CPU Pod, with its own Postgres baked into the same container.
   `ghcr.io/berriai/litellm-database:main-stable` (this is **Wolfi**, not
   Debian — use `apk`, not `apt-get`; it also ships no `postgres` user, which
   the Dockerfile creates via `addgroup`/`adduser`).
-- `entrypoint.sh` — inits/starts Postgres against `$PGDATA`, writes
+- `entrypoint.sh` — inits/starts Postgres on **local** disk, restores/syncs
+  it to the network volume as a backup (see "Persistence" below), writes
   `/app/config.yaml` from `$LITELLM_CONFIG_YAML` if set, starts litellm.
 - `config/litellm_config.yaml` — the model list, baked into the image as a
   fallback. The **live** config is whatever `LITELLM_CONFIG_YAML` is set to
@@ -73,6 +74,41 @@ requires a valid RunPod **account** API key. The `RUNPOD_API_KEY` in a
 typical shell env is not necessarily that key (returned 401 in testing) —
 if you need to do this, get the account key from the user first.
 
+Stopping/starting a pod (`POST .../stop` then `.../start`) reuses the same
+container instance — it does **not** re-pull the image, even after pushing
+a new `:latest`. To pick up a new image, `DELETE` the pod and `POST` a fresh
+one with the same config (safe here since Postgres data lives on the network
+volume backup, not the pod itself — see "Persistence").
+
+## Persistence
+
+RunPod Network Volumes were found to **not reliably honor POSIX directory
+permission bits** — neither `chmod` on an existing directory nor `mkdir`'s
+own mode argument makes a directory actually report back as `0700`. Postgres
+hard-requires exactly `0700`/`0750` on `PGDATA`, so pointing `PGDATA` directly
+at the volume makes `initdb` crash-loop forever with
+`FATAL: data directory ... has invalid permissions` — confirmed even with a
+freshly-created directory, ruling out "existing dir" vs "fresh mkdir" as the
+variable.
+
+The fix in `entrypoint.sh`: Postgres's real `PGDATA` lives on the
+**container's local disk** (`/var/lib/postgresql/pgdata`, which handles
+permissions correctly), and the network volume (`$PGDATA_BACKUP`, default
+`/runpod-volume/pgdata_backup`) is used purely as a backup target — restored
+into local storage on boot if present, and synced back every 5 minutes plus
+on graceful shutdown (`trap ... TERM INT`, with a `CHECKPOINT` first to
+reduce inconsistency risk from copying a live data directory).
+
+This means a pod restart is only lossless if it's **graceful** (gives the
+container time to catch the `TERM` signal and run the final sync) — a hard
+kill between periodic syncs loses whatever changed since the last one
+(≤5 min of spend logs/keys, not the model config, which is redelivered via
+`LITELLM_CONFIG_YAML` regardless).
+
+Verified locally end-to-end: boot → write a row → graceful stop (triggers
+final sync) → fresh container against the same volume dir → restore →
+row still there.
+
 ## Testing
 
 OpenAI-compatible — either the `openai` SDK or raw `requests` against
@@ -90,11 +126,3 @@ in the pod's env vars on RunPod. Check current values via
 `mcp__runpod__get-pod`, not by reading this repo — never commit real secret
 values here.
 
-## Known limitation
-
-No persistent storage is currently attached (see above) — Postgres data
-lives on the pod's ephemeral container disk, so **a pod restart wipes
-LiteLLM's metadata DB** (spend logs, virtual keys, etc). The model config
-itself is unaffected since it's redelivered via `LITELLM_CONFIG_YAML` on
-every boot. A 20GB network volume was created for this purpose but is not
-attached — resolving that requires the REST API workaround above.
