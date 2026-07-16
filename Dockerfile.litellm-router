@@ -1,0 +1,32 @@
+# Bakes a Postgres server + a *default* litellm config into the image, so
+# a single RunPod Pod can run both the router and its own metadata
+# database, with the DB's data directory on a network volume for
+# persistence across restarts (see entrypoint.sh).
+#
+# The baked-in config/litellm_config.yaml is only a fallback -- at boot,
+# entrypoint.sh overwrites /app/config.yaml with the LITELLM_CONFIG_YAML
+# env var when it's set, so a template deployer can edit the model list
+# straight from RunPod's env var field without rebuilding this image.
+#
+# Rebuild + push only when this Dockerfile or entrypoint.sh changes:
+#
+#   docker build -t <registry>/<you>/runpod-litellm-router:latest -f Dockerfile.litellm-router .
+#   docker push <registry>/<you>/runpod-litellm-router:latest
+#
+FROM ghcr.io/berriai/litellm-database:main-stable
+
+# Base image is Wolfi (apk, not Debian), and ships no postgres user.
+USER root
+RUN apk add --no-cache postgresql-15 postgresql-15-client postgresql-15-contrib \
+    && addgroup -S postgres && adduser -S -D -H -G postgres -s /bin/sh postgres
+
+ENV PGDATA=/runpod-volume/pgdata
+ENV POSTGRES_USER=litellm
+ENV POSTGRES_DB=litellm
+
+COPY config/litellm_config.yaml /app/config.yaml
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 4000
+ENTRYPOINT ["/entrypoint.sh"]
