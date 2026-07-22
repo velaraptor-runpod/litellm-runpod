@@ -1,0 +1,50 @@
+# Baked into the image, templated by entrypoint.sh via envsubst at container
+# start (only ${RUNPOD_POD_ID} is substituted -- nginx's own $host/$1/etc.
+# are passed the literal single-quoted variable list, so they survive).
+#
+# Why this exists: LiteLLM's own trailing-slash redirects (e.g. /ui ->
+# /ui/, /ui/login -> /ui/login/) are built from whatever Host RunPod's
+# internal proxy hop hands the container, which is not the public
+# `<pod-id>-4000.proxy.runpod.net` domain -- so the redirect Location
+# points at an unreachable internal address (or downgrades to http://,
+# which browsers block as mixed content). This nginx sits in front of
+# litellm on the pod's actual exposed port and rewrites any such redirect
+# back to the real public domain before it reaches the browser, regardless
+# of what litellm put in it -- same mechanism as local/nginx.conf.template
+# (dev-only, run against an already-public pod from a laptop), just run
+# inside the pod itself and pointed at the local litellm process.
+worker_processes  1;
+error_log  stderr notice;
+pid /run/nginx.pid;
+# compiled-in default is "user nginx" but the image (like postgres) has no
+# nginx user -- everything else in this container already runs as root
+user root;
+
+events {
+    worker_connections  1024;
+}
+
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
+    access_log  /dev/stdout;
+    sendfile        on;
+    keepalive_timeout  65;
+
+    server {
+        listen 4000;
+
+        location / {
+            proxy_pass http://127.0.0.1:4001;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto https;
+            proxy_read_timeout 600s;
+            # streamed /v1/chat/completions responses must not be buffered
+            proxy_buffering off;
+
+            proxy_redirect ~^https?://[^/]+(/.*)$ https://${RUNPOD_POD_ID}-4000.proxy.runpod.net$1;
+        }
+    }
+}

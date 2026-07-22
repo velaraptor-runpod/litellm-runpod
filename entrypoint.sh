@@ -54,6 +54,7 @@ shutdown() {
   kill "$SYNC_LOOP_PID" 2>/dev/null || true
   sync_to_volume
   kill "$LITELLM_PID" 2>/dev/null || true
+  kill "$NGINX_PID" 2>/dev/null || true
   su postgres -c "pg_ctl -D $PGDATA stop -m fast" 2>/dev/null || true
   exit 0
 }
@@ -66,7 +67,17 @@ else
   echo "[entrypoint] LITELLM_CONFIG_YAML not set -- using image's baked-in default config"
 fi
 
+# RunPod injects RUNPOD_POD_ID inside the pod itself; default it so local
+# sanity-check runs (docker run without that var) still start cleanly --
+# the UI redirect will just point at an unresolvable host until you access
+# it via /ui/ directly.
+export RUNPOD_POD_ID="${RUNPOD_POD_ID:-localhost}"
+echo "[entrypoint] starting nginx (UI redirect fix, listens on 4000, proxies to litellm on 4001)"
+envsubst '${RUNPOD_POD_ID}' < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+nginx -g 'daemon off;' &
+NGINX_PID=$!
+
 echo "[entrypoint] starting litellm"
-litellm --config /app/config.yaml --port 4000 --host 0.0.0.0 &
+litellm --config /app/config.yaml --port 4001 --host 0.0.0.0 &
 LITELLM_PID=$!
 wait "$LITELLM_PID"

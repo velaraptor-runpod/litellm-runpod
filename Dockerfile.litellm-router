@@ -18,6 +18,7 @@ FROM ghcr.io/berriai/litellm-database:main-stable
 # Base image is Wolfi (apk, not Debian), and ships no postgres user.
 USER root
 RUN apk add --no-cache postgresql-15 postgresql-15-client postgresql-15-contrib \
+    nginx-stable gettext-envsubst \
     && addgroup -S postgres && adduser -S -D -H -G postgres -s /bin/sh postgres
 
 ENV PGDATA=/runpod-volume/pgdata
@@ -25,6 +26,7 @@ ENV POSTGRES_USER=litellm
 ENV POSTGRES_DB=litellm
 
 COPY config/litellm_config.yaml /app/config.yaml
+COPY nginx/ui-proxy.conf.template /etc/nginx/nginx.conf.template
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

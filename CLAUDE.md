@@ -5,25 +5,34 @@ as a RunPod CPU Pod, with its own Postgres baked into the same container.
 
 ## Files
 
-- `Dockerfile.litellm-router` — image: litellm + Postgres, based on
+- `Dockerfile.litellm-router` — image: litellm + Postgres + nginx, based on
   `ghcr.io/berriai/litellm-database:main-stable` (this is **Wolfi**, not
   Debian — use `apk`, not `apt-get`; it also ships no `postgres` user, which
   the Dockerfile creates via `addgroup`/`adduser`).
 - `entrypoint.sh` — inits/starts Postgres on **local** disk, restores/syncs
   it to the network volume as a backup (see "Persistence" below), writes
-  `/app/config.yaml` from `$LITELLM_CONFIG_YAML` if set, starts litellm.
-- `config/litellm_config.yaml` — the model list, baked into the image as a
-  fallback. The **live** config is whatever `LITELLM_CONFIG_YAML` is set to
-  on the pod — keep this file in sync with that so the repo reflects reality.
+  `/app/config.yaml` from `$LITELLM_CONFIG_YAML` if set, templates and starts
+  nginx (see "Accessing the Admin UI" below), starts litellm.
+- `nginx/ui-proxy.conf.template` — nginx config templated by `entrypoint.sh`
+  via `envsubst` at boot (only `${RUNPOD_POD_ID}`; nginx's own `$` vars are
+  passed through). Listens on **4000** (the port RunPod actually exposes),
+  proxies to litellm on internal port **4001**, and rewrites litellm's
+  broken UI-redirect `Location` headers — see "Accessing the Admin UI".
+- `config/litellm_config.yaml` — `router_settings` / `litellm_settings` /
+  `general_settings` only, baked into the image as a fallback; `model_list`
+  is intentionally empty (`[]`) — models are added at runtime via the API,
+  not this file (see "Changing models" below). The **live** config is
+  whatever `LITELLM_CONFIG_YAML` is set to on the pod — keep this file in
+  sync with that so the repo reflects reality.
 - `create_litellm_router_pod.py` — REST-API pod creation script (see
   "Attaching a network volume" below for when this is actually needed instead
   of the RunPod MCP tools).
 
 ## Build & push the image
 
-Rebuild only when `Dockerfile.litellm-router` or `entrypoint.sh` changes —
-not for model/config changes (those go through `LITELLM_CONFIG_YAML`, no
-rebuild needed).
+Rebuild only when `Dockerfile.litellm-router`, `entrypoint.sh`, or
+`nginx/ui-proxy.conf.template` changes — not for model/config changes (those
+go through the API / `LITELLM_CONFIG_YAML`, no rebuild needed).
 
 ```bash
 docker buildx build --platform linux/amd64 -t velaraptor1/litellm-router:latest -f Dockerfile.litellm-router --push .
@@ -40,25 +49,37 @@ docker run -d --name litellm-router-test \
   -v /tmp/pgtest:/runpod-volume -p 14000:4000 \
   velaraptor1/litellm-router:latest
 curl http://localhost:14000/health/liveliness
+curl -i http://localhost:14000/ui/   # trailing slash always works, incl. locally
 docker rm -f litellm-router-test
 ```
 
-## Changing models / secrets on the running pod
+## Changing models on the running pod
 
-1. Edit `config/litellm_config.yaml`.
-2. Push it live with `mcp__runpod__update-pod`, setting **the full YAML** as
-   the `LITELLM_CONFIG_YAML` env var, plus every `os.environ/*` var it
-   references (API base/key per model).
-3. `update-pod`'s `env` is the full replacement env map, not a merge — always
-   include every existing var (`LITELLM_MASTER_KEY`, `POSTGRES_PASSWORD`,
-   etc.) alongside whatever you're adding/changing, or you'll drop the rest.
-4. No separate restart step needed — `update-pod` restarts the container on
-   this v1 CPU pod to apply the new env. (`mcp__runpod__restart-pod` is
-   v2-only and 501s here.)
+Models are added/removed at runtime through LiteLLM's model-management API
+(`POST {router_url}/model/new`, `POST {router_url}/model/delete`) or the
+Admin UI's Models tab, **not** by editing `config/litellm_config.yaml` —
+`general_settings.store_model_in_db: true` persists them to Postgres, so no
+pod restart or `LITELLM_CONFIG_YAML` update is needed. See README's "Adding
+a model backend" for the exact curl calls.
 
 `litellm_params.model` must exactly match the model id the backend actually
 serves — it is **not** a free-form label. Check with:
 `curl -H "Authorization: Bearer <key>" <api_base>/models`
+
+## Changing router/general settings or secrets on the running pod
+
+1. Edit `config/litellm_config.yaml` (`router_settings` / `litellm_settings`
+   / `general_settings` — no `model_list` entries).
+2. Push it live with `mcp__runpod__update-pod`, setting **the full YAML** as
+   the `LITELLM_CONFIG_YAML` env var, plus every secret env var it or the
+   pod otherwise needs (`LITELLM_MASTER_KEY`, `POSTGRES_PASSWORD`,
+   `DATABASE_URL` if overridden, etc).
+3. `update-pod`'s `env` is the full replacement env map, not a merge — always
+   include every existing var alongside whatever you're adding/changing, or
+   you'll drop the rest.
+4. No separate restart step needed — `update-pod` restarts the container on
+   this v1 CPU pod to apply the new env. (`mcp__runpod__restart-pod` is
+   v2-only and 501s here.)
 
 ## Attaching a network volume
 
@@ -108,6 +129,31 @@ kill between periodic syncs loses whatever changed since the last one
 Verified locally end-to-end: boot → write a row → graceful stop (triggers
 final sync) → fresh container against the same volume dir → restore →
 row still there.
+
+## Accessing the Admin UI
+
+LiteLLM mounts its Admin UI at `/ui` via Starlette `StaticFiles`, which
+issues a 307 redirect from `/ui` (no trailing slash) to `/ui/`. That
+redirect's `Location` header is built from whatever `Host` RunPod's internal
+proxy hop hands the container, which is **not** the public
+`<pod-id>-4000.proxy.runpod.net` domain — so the redirect points at an
+unreachable internal address (or downgrades to `http://`, which the browser
+blocks as mixed content on an `https://` page). Hitting `/ui/` directly
+skips the need for that redirect and always works.
+
+The fix baked into the image (`nginx/ui-proxy.conf.template` +
+`entrypoint.sh`): nginx listens on the pod's actual exposed port 4000,
+proxies to litellm on internal port 4001, and rewrites *any* absolute
+redirect `Location` header back to the real public domain via
+`proxy_redirect`, regardless of what internal host litellm put in it — same
+mechanism as `local/nginx.conf.template` (a dev-only variant for proxying
+to an already-running pod from your laptop without a rebuild), just
+relocated inside the pod itself.
+
+`RUNPOD_POD_ID` is injected by RunPod automatically inside every pod, so no
+extra env var is needed on deploy. It defaults to `localhost` when unset
+(e.g. the local sanity-check run below), in which case the redirect still
+won't resolve — for local testing, just hit `/ui/` directly.
 
 ## Testing
 
