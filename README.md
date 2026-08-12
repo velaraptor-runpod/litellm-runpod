@@ -1,5 +1,7 @@
 # litellm-runpod
 
+![litellm-runpod](assets/banner.png)
+
 Runs a [LiteLLM](https://github.com/BerriAI/litellm) proxy/router as a RunPod
 CPU Pod, with its own Postgres instance baked into the image (data lives on
 a mounted network volume so it survives Pod restarts).
@@ -7,7 +9,7 @@ a mounted network volume so it survives Pod restarts).
 ## Files
 
 - `Dockerfile.litellm-router` — builds the image (litellm + Postgres + a default config).
-- `entrypoint.sh` — starts Postgres on the mounted volume, writes the config, starts litellm.
+- `entrypoint.sh` — starts Postgres on local disk (mirrored to the mounted volume every 5 min, plus dated daily snapshot tarballs; restores on boot), writes the config, starts litellm.
 - `config/litellm_config.yaml` — default config baked into the image (see below).
 - `create_litellm_router_pod.py` — CLI to create the Pod via the RunPod API.
 

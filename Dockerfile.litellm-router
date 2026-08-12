@@ -13,7 +13,12 @@
 #   docker build -t <registry>/<you>/runpod-litellm-router:latest -f Dockerfile.litellm-router .
 #   docker push <registry>/<you>/runpod-litellm-router:latest
 #
-FROM ghcr.io/berriai/litellm-database:main-stable
+# Base image is pinned by tag+digest (not the floating :main-stable) so
+# builds are reproducible. This digest is exactly what :main-stable resolves
+# to today (= v1.96.2, the newest clean release tag; 1.97+/1.98+ tags are
+# only dev/rc builds). To bump: pick the newest bare vX.Y.Z tag from
+# https://github.com/BerriAI/litellm/releases, refresh the digest, rebuild.
+FROM ghcr.io/berriai/litellm-database:v1.96.2@sha256:80e5e92bdcca246cd4153d451e5f75b65e19c7e39c46cc88a38bed4b65cc5836
 
 # Base image is Wolfi (apk, not Debian), and ships no postgres user.
 USER root

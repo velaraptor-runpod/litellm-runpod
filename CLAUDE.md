@@ -6,9 +6,9 @@ as a RunPod CPU Pod, with its own Postgres baked into the same container.
 ## Files
 
 - `Dockerfile.litellm-router` — image: litellm + Postgres + nginx, based on
-  `ghcr.io/berriai/litellm-database:main-stable` (this is **Wolfi**, not
-  Debian — use `apk`, not `apt-get`; it also ships no `postgres` user, which
-  the Dockerfile creates via `addgroup`/`adduser`).
+  `ghcr.io/berriai/litellm-database` pinned to the `v1.96.2` tag + digest
+  (this is **Wolfi**, not Debian — use `apk`, not `apt-get`; it also ships no
+  `postgres` user, which the Dockerfile creates via `addgroup`/`adduser`).
 - `entrypoint.sh` — inits/starts Postgres on **local** disk, restores/syncs
   it to the network volume as a backup (see "Persistence" below), writes
   `/app/config.yaml` from `$LITELLM_CONFIG_YAML` if set, templates and starts
@@ -119,6 +119,21 @@ permissions correctly), and the network volume (`$PGDATA_BACKUP`, default
 into local storage on boot if present, and synced back every 5 minutes plus
 on graceful shutdown (`trap ... TERM INT`, with a `CHECKPOINT` first to
 reduce inconsistency risk from copying a live data directory).
+
+On top of that hot mirror, the entrypoint writes **dated daily snapshots**:
+a `CHECKPOINT`ed tarball of `PGDATA` at
+`$PGDATA_BACKUP_DAILY/pgdata-YYYYMMDD.tar.gz` (default
+`/runpod-volume/pgdata_backup_daily`, UTC date stamp — same-day reruns
+overwrite), taken once at boot and then every 24h, pruned to
+`BACKUP_RETENTION_DAYS` (default 14). These are the disaster-recovery /
+point-in-time tier: boot restores the **mirror first** (it's the freshest)
+and only falls back to the newest daily snapshot when the mirror is missing
+entirely. To force a restore from a daily snapshot, empty/rename the mirror
+dir (or point `PGDATA_BACKUP` elsewhere) before booting; to pick an *older*
+snapshot, remove the newer `pgdata-*.tar.gz` files first. Snapshot write
+goes through a `.tmp` file + rename, and boot extracts via a temp dir, so a
+truncated/corrupt shard degrades to a fresh `initdb` instead of
+crash-looping.
 
 This means a pod restart is only lossless if it's **graceful** (gives the
 container time to catch the `TERM` signal and run the final sync) — a hard
