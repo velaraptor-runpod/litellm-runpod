@@ -1,5 +1,7 @@
 # litellm-runpod
 
+![litellm-runpod](assets/banner.png)
+
 Runs a [LiteLLM](https://github.com/BerriAI/litellm) proxy/router as a RunPod
 CPU Pod, with its own Postgres instance baked into the image (data lives on
 a mounted network volume so it survives Pod restarts).
