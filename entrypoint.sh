@@ -12,8 +12,8 @@ set -euo pipefail
 # recovery / point-in-time restore.
 
 PGDATA="/var/lib/postgresql/pgdata"
-PGDATA_BACKUP="${PGDATA_BACKUP:-/runpod-volume/pgdata_backup}"
-PGDATA_BACKUP_DAILY="${PGDATA_BACKUP_DAILY:-/runpod-volume/pgdata_backup_daily}"
+PGDATA_BACKUP="${PGDATA_BACKUP:-/workspace/pgdata_backup}"
+PGDATA_BACKUP_DAILY="${PGDATA_BACKUP_DAILY:-/workspace/pgdata_backup_daily}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 POSTGRES_USER="${POSTGRES_USER:-litellm}"
 POSTGRES_DB="${POSTGRES_DB:-litellm}"
