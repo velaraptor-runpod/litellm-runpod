@@ -31,6 +31,7 @@ ENV POSTGRES_USER=litellm
 ENV POSTGRES_DB=litellm
 
 COPY config/litellm_config.yaml /app/config.yaml
+COPY callbacks/custom_callbacks.py /app/custom_callbacks.py
 COPY nginx/ui-proxy.conf.template /etc/nginx/nginx.conf.template
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

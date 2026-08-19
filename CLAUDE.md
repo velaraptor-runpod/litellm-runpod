@@ -23,7 +23,13 @@ as a RunPod CPU Pod, with its own Postgres baked into the same container.
   is intentionally empty (`[]`) — models are added at runtime via the API,
   not this file (see "Changing models" below). The **live** config is
   whatever `LITELLM_CONFIG_YAML` is set to on the pod — keep this file in
-  sync with that so the repo reflects reality.
+  sync with that so the repo reflects reality. `litellm_settings.callbacks`
+  points at `custom_callbacks.proxy_handler_instance`.
+- `callbacks/custom_callbacks.py` — response sanitizer (`CustomLogger`
+  subclass): repairs boundary whitespace in non-streamed
+  `function.arguments` and logs streamed hits + leaked template markup as a
+  hit counter. Baked to `/app/custom_callbacks.py` (importable because the
+  proxy sys.path-adds the config dir). `CALLBACK_MUTATE=0` env = audit-only.
 - `create_litellm_router_pod.py` — REST-API pod creation script (see
   "Attaching a network volume" below for when this is actually needed instead
   of the RunPod MCP tools).
