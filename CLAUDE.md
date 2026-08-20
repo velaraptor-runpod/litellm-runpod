@@ -151,6 +151,49 @@ Verified locally end-to-end: boot → write a row → graceful stop (triggers
 final sync) → fresh container against the same volume dir → restore →
 row still there.
 
+## Migrating from a volume-less pod (runbook written 2026-08-20)
+
+Volumes attach ONLY at pod creation — a pre-network-volume pod can never be
+given one, so migration = dump → new pod with volume at create time →
+restore. Two footguns were hit the first time this was done; the steps below
+avoid both.
+
+1. **Dump the old pod** (RunPod console → Connect → Web Terminal; the image
+   ships no sshd):
+   `su postgres -c "pg_dump -Fc -f /tmp/litellm-backup.dump litellm"`, then
+   `pg_restore --list` it as a validity check. Move the file off with
+   `runpodctl send` / `receive` (or scp). Stop, never delete, the old pod —
+   a stopped pod keeps its disk.
+2. **Create the new pod with the volume attached.** The v2 MCP/REST create
+   path has no `networkVolumeId`; use `create_litellm_router_pod.py` or raw
+   REST (needs the account-level API key). Volume and pod must be in the same
+   data center.
+3. **Kill LiteLLM's connections before dropping the boot-created DB.**
+   LiteLLM starts at boot and holds a Prisma pool; a plain `DROP DATABASE`
+   is refused ("being accessed by other users") and a `pg_restore` into the
+   surviving non-empty DB yields ~300 "already exists" errors plus COPY
+   conflicts — a half-merged mess, not a restore. Evict + drop + recreate in
+   ONE psql session so nothing reconnects in between:
+   `REVOKE CONNECT ON DATABASE litellm FROM public;` (and from litellm),
+   `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='litellm' AND pid <> pg_backend_pid();`,
+   `DROP DATABASE litellm;`, `CREATE DATABASE litellm OWNER litellm;`.
+   LiteLLM errors on 4001 during this and recovers once the DB is back.
+4. **Restore into the truly empty DB:**
+   `su postgres -c "pg_restore --no-owner --no-privileges -d litellm /tmp/litellm-backup.dump"`
+   — expect ~no errors. Verify row counts on `LiteLLM_VerificationToken`,
+   `LiteLLM_ProxyModelTable`, `LiteLLM_SpendLogs`.
+5. **Sync local → volume mirror BEFORE any restart.** Boot unconditionally
+   restores the mirror over local when the mirror has PG_VERSION, and at this
+   point the mirror still holds the stale first-boot cluster; restart too
+   early and the restore is overwritten. `su postgres -c "psql -c 'CHECKPOINT;'"`
+   then `cp -a /var/lib/postgresql/pgdata/. /runpod-volume/pgdata_backup/`
+   (or wait >5 min for the sync loop).
+6. Verify via API (`/health/liveliness`, `/model/info`, one request on an
+   existing virtual key), then do ONE graceful container restart to prove the
+   boot→mirror-restore path serves the restored data. Repoint clients at the
+   new pod's `-4000.proxy.runpod.net` URL (the pod id is in the URL; no DNS
+   shortcut).
+
 ## Accessing the Admin UI
 
 LiteLLM mounts its Admin UI at `/ui` via Starlette `StaticFiles`, which
